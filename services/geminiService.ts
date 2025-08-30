@@ -7,7 +7,7 @@ if (!process.env.API_KEY) {
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-const schema = {
+const baseSchema = {
   type: Type.OBJECT,
   properties: {
     itemName: { type: Type.STRING, description: "The full name of the menu item." },
@@ -42,24 +42,60 @@ const schema = {
 
 
 export const extractMenuMetadata = async (
-  base64Image: string,
-  mimeType: string
+  base64Image: string | null,
+  mimeType: string | null,
+  itemName?: string,
+  description?: string
 ): Promise<MenuItemMetadata> => {
-  const prompt = `You are an expert catalog manager for a food delivery service like DoorDash. Your task is to analyze the image of this menu item and extract detailed, structured metadata. Provide the data in the requested JSON format. The item's name might be visible in the image, or you may need to infer it from the dish's appearance. Use your expertise to generate compelling descriptions and useful tags.`;
+  const promptParts: string[] = [
+    `You are an expert catalog manager for a food delivery service like DoorDash. Your task is to generate detailed, structured metadata for a menu item based on the information provided. Provide the data in the requested JSON format. Use your expertise to generate compelling descriptions and useful tags.`
+  ];
+
+  if (itemName && description) {
+    promptParts.push(`The user has provided the following name and description. Use them as the ground truth for those fields. Item Name: "${itemName}". Description: "${description}".`);
+  } else if (itemName) {
+    promptParts.push(`The user has provided the item name. Use it as the ground truth for that field and generate a compelling description based on it. Item Name: "${itemName}".`);
+  } else if (description) {
+    promptParts.push(`The user has provided the description. Use it as the ground truth for that field and infer a suitable item name. Description: "${description}".`);
+  }
+
+  if (base64Image) {
+    promptParts.push(`Use the provided image as a visual reference to enhance the accuracy and richness of all generated metadata fields.`);
+  } else {
+    promptParts.push(`Generate the metadata based only on the provided text.`);
+  }
+
+  const prompt = promptParts.join('\n\n');
+  
+  // The type for the parts array in the contents object
+  const contentParts: { text: string }[] | ({ inlineData: { data: string; mimeType: string; }} | { text: string })[] = [{ text: prompt }];
+
+  if (base64Image && mimeType) {
+    (contentParts as ({ inlineData: { data: string; mimeType: string; }} | { text: string })[]).unshift({
+      inlineData: {
+        data: base64Image,
+        mimeType: mimeType,
+      },
+    });
+  }
+  
+  // Dynamically build the schema to exclude user-provided fields from Gemini's task.
+  const schema = JSON.parse(JSON.stringify(baseSchema));
+
+  if (itemName && itemName.trim()) {
+    delete schema.properties.itemName;
+    schema.required = schema.required.filter((prop: string) => prop !== 'itemName');
+  }
+  if (description && description.trim()) {
+    delete schema.properties.description;
+    schema.required = schema.required.filter((prop: string) => prop !== 'description');
+  }
 
   try {
     const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: {
-          parts: [
-            {
-              inlineData: {
-                data: base64Image,
-                mimeType: mimeType,
-              },
-            },
-            { text: prompt },
-          ],
+          parts: contentParts,
         },
         config: {
           responseMimeType: 'application/json',
@@ -69,6 +105,14 @@ export const extractMenuMetadata = async (
 
     const jsonText = response.text.trim();
     const data = JSON.parse(jsonText);
+    
+    // Re-insert the user-provided fields to ensure they are the source of truth.
+    if (itemName && itemName.trim()) {
+      data.itemName = itemName;
+    }
+    if (description && description.trim()) {
+      data.description = description;
+    }
     
     // Simple validation to ensure the parsed object fits the expected structure
     if (!data.itemName || !data.description) {
