@@ -1,0 +1,5 @@
+{
+  "name": "Menu Item Metadata Extractor",
+  "description": "Upload a picture of a restaurant menu item to extract structured metadata for cataloging, ranking, and recommendations, powered by Gemini.",
+  "requestFramePermissions": []
+}
